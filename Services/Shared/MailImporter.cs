@@ -142,14 +142,32 @@ namespace MailArchiver.Services.Shared
                             using var ms = new MemoryStream();
                             await attachment.Content.DecodeToAsync(ms);
                             var fileName = GetAttachmentFileName(attachment);
+                            var contentBytes = ms.ToArray();
+                            var contentHash = EmailAttachmentContent.CalculateContentHash(contentBytes);
+                            var existingContent = await context.EmailAttachmentContents
+                                .FirstOrDefaultAsync(c => c.ContentHash == contentHash);
+
+                            if (existingContent == null)
+                            {
+                                existingContent = new EmailAttachmentContent
+                                {
+                                    ContentHash = contentHash,
+                                    Content = contentBytes,
+                                    Size = ms.Length
+                                };
+
+                                context.EmailAttachmentContents.Add(existingContent);
+                            }
+
                             archivedEmail.Attachments.Add(new EmailAttachment
                             {
                                 FileName = MailContentHelper.CleanText(fileName),
                                 ContentType = MailContentHelper.CleanText(attachment.ContentType?.MimeType ?? "application/octet-stream"),
                                 ContentId = !string.IsNullOrEmpty(attachment.ContentId) ? MailContentHelper.CleanText(attachment.ContentId) : null,
-                                Content = ms.ToArray(), Size = ms.Length
+                                AttachmentContent = existingContent,
+                                Size = ms.Length
                             });
-                        }
+                                                    }
                         catch (Exception ex) { _logger.LogWarning(ex, "Job {JobId}: Failed to process attachment", jobId); }
                     }
                 }

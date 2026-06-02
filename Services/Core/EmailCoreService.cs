@@ -594,7 +594,7 @@ namespace MailArchiver.Services.Core
             {
                 var email = await _context.ArchivedEmails
                     .Include(e => e.MailAccount)
-                    .Include(e => e.Attachments)
+                    .Include(e => e.Attachments).ThenInclude(a => a.AttachmentContent)
                     .FirstOrDefaultAsync(e => e.Id == parameters.EmailId.Value);
 
                 if (email == null)

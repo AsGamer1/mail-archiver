@@ -75,7 +75,7 @@ namespace MailArchiver.Services.Providers
         async Task<bool> IProviderEmailService.RestoreEmailToFolderAsync(int emailId, int targetAccountId, string folderName, bool preserveFolderStructure)
         {
             var email = await _context.ArchivedEmails
-                .Include(e => e.Attachments)
+                .Include(e => e.Attachments).ThenInclude(a => a.AttachmentContent)
                 .FirstOrDefaultAsync(e => e.Id == emailId);
 
             if (email == null)

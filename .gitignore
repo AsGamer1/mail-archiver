@@ -299,3 +299,8 @@ update_resource_files.ps1
 /exports
 /obj
 /.clinerules
+
+# Container
+data-protection-keys/
+postgres-data/
+logs/

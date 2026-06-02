@@ -335,7 +335,7 @@ namespace MailArchiver.Services
         {
             var emails = context.ArchivedEmails
                 .Where(e => job.EmailIds.Contains(e.Id) && e.FolderName == folderName)
-                .Include(e => e.Attachments)
+                .Include(e => e.Attachments).ThenInclude(a => a.AttachmentContent)
                 .AsAsyncEnumerable();
 
             var emailIndex = 1;
@@ -417,7 +417,7 @@ namespace MailArchiver.Services
 
             var emails = context.ArchivedEmails
                 .Where(e => job.EmailIds.Contains(e.Id) && e.FolderName == folderName)
-                .Include(e => e.Attachments)
+                .Include(e => e.Attachments).ThenInclude(a => a.AttachmentContent)
                 .OrderBy(e => e.SentDate)
                 .AsAsyncEnumerable();
 

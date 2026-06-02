@@ -29,7 +29,7 @@ namespace MailArchiver.Services.Providers.Eml
             try
             {
                 var email = await context.ArchivedEmails
-                    .Include(e => e.Attachments)
+                    .Include(e => e.Attachments).ThenInclude(a => a.AttachmentContent)
                     .FirstOrDefaultAsync(e => e.Id == archivedEmailId);
 
                 if (email != null && email.Attachments != null && email.Attachments.Any())

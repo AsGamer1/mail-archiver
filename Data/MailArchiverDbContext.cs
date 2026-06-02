@@ -8,6 +8,7 @@ namespace MailArchiver.Data
         public DbSet<MailAccount> MailAccounts { get; set; }
         public DbSet<ArchivedEmail> ArchivedEmails { get; set; }
         public DbSet<EmailAttachment> EmailAttachments { get; set; }
+        public DbSet<EmailAttachmentContent> EmailAttachmentContents { get; set; }
         public DbSet<User> Users { get; set; }
         public DbSet<UserMailAccount> UserMailAccounts { get; set; }
         public DbSet<AccessLog> AccessLogs { get; set; }
@@ -101,14 +102,46 @@ namespace MailArchiver.Data
                 .HasForeignKey(a => a.ArchivedEmailId)
                 .OnDelete(DeleteBehavior.Cascade);
 
-            // Konfiguration für Bytea (binäre Daten) für Anhänge
+            // Bytea configuration for attachment content, with hash-based deduplication
             modelBuilder.Entity<EmailAttachment>()
-                .Property(a => a.Content)
-                .HasColumnType("bytea");
+                .HasOne(a => a.AttachmentContent)
+                .WithMany(c => c.Attachments)
+                .HasForeignKey(a => a.EmailAttachmentContentId)
+                .OnDelete(DeleteBehavior.Restrict);
 
             modelBuilder.Entity<EmailAttachment>()
                 .Property(a => a.FileName)
                 .HasColumnType("text");
+
+            modelBuilder.Entity<EmailAttachment>()
+                .Property(a => a.ContentType)
+                .HasColumnType("text");
+
+            modelBuilder.Entity<EmailAttachment>()
+                .Property(a => a.ContentId)
+                .HasColumnType("text")
+                .IsRequired(false);
+
+            modelBuilder.Entity<EmailAttachment>()
+                .Property(a => a.Size)
+                .HasColumnType("bigint");
+
+            modelBuilder.Entity<EmailAttachmentContent>()
+                .Property(c => c.ContentHash)
+                .HasColumnType("varchar(32)")
+                .IsRequired();
+
+            modelBuilder.Entity<EmailAttachmentContent>()
+                .HasIndex(c => c.ContentHash)
+                .IsUnique();
+
+            modelBuilder.Entity<EmailAttachmentContent>()
+                .Property(c => c.Content)
+                .HasColumnType("bytea");
+
+            modelBuilder.Entity<EmailAttachmentContent>()
+                .Property(c => c.Size)
+                .HasColumnType("bigint");
 
             modelBuilder.Entity<EmailAttachment>()
                 .Property(a => a.ContentType)

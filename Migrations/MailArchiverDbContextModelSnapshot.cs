@@ -242,9 +242,8 @@ namespace MailArchiver.Migrations
                     b.Property<int>("ArchivedEmailId")
                         .HasColumnType("integer");
 
-                    b.Property<byte[]>("Content")
-                        .IsRequired()
-                        .HasColumnType("bytea");
+                    b.Property<int>("EmailAttachmentContentId")
+                        .HasColumnType("integer");
 
                     b.Property<string>("ContentId")
                         .HasColumnType("text");
@@ -264,7 +263,36 @@ namespace MailArchiver.Migrations
 
                     b.HasIndex("ArchivedEmailId");
 
+                    b.HasIndex("EmailAttachmentContentId");
+
                     b.ToTable("EmailAttachments", "mail_archiver");
+                });
+
+            modelBuilder.Entity("MailArchiver.Models.EmailAttachmentContent", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<byte[]>("Content")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<long>("Size")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasColumnType("character varying(32)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContentHash")
+                        .IsUnique();
+
+                    b.ToTable("EmailAttachmentContents", "mail_archiver");
                 });
 
             modelBuilder.Entity("MailArchiver.Models.User", b =>
@@ -377,7 +405,15 @@ namespace MailArchiver.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("MailArchiver.Models.EmailAttachmentContent", "AttachmentContent")
+                        .WithMany("Attachments")
+                        .HasForeignKey("EmailAttachmentContentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("ArchivedEmail");
+
+                    b.Navigation("AttachmentContent");
                 });
 
             modelBuilder.Entity("MailArchiver.Models.UserMailAccount", b =>

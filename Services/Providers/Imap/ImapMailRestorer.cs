@@ -47,7 +47,7 @@ namespace MailArchiver.Services.Providers.Imap
             try
             {
                 var email = await _context.ArchivedEmails
-                    .Include(e => e.Attachments)
+                    .Include(e => e.Attachments).ThenInclude(a => a.AttachmentContent)
                     .FirstOrDefaultAsync(e => e.Id == emailId);
 
                 if (email == null)
@@ -657,7 +657,7 @@ namespace MailArchiver.Services.Providers.Imap
             try
             {
                 var email = await _context.ArchivedEmails
-                    .Include(e => e.Attachments)
+                    .Include(e => e.Attachments).ThenInclude(a => a.AttachmentContent)
                     .FirstOrDefaultAsync(e => e.Id == emailId);
 
                 if (email == null)

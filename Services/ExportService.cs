@@ -372,7 +372,7 @@ namespace MailArchiver.Services
                 // Load batch of emails with AsNoTracking to prevent memory buildup
                 var emailBatch = await context.ArchivedEmails
                     .Where(e => e.MailAccountId == job.MailAccountId && e.FolderName == folderName)
-                    .Include(e => e.Attachments)
+                    .Include(e => e.Attachments).ThenInclude(a => a.AttachmentContent)
                     .OrderBy(e => e.Id)
                     .Skip(offset)
                     .Take(batchSize)
@@ -486,7 +486,7 @@ namespace MailArchiver.Services
                 // Load batch of emails with AsNoTracking to prevent memory buildup
                 var emailBatch = await context.ArchivedEmails
                     .Where(e => e.MailAccountId == job.MailAccountId && e.FolderName == folderName)
-                    .Include(e => e.Attachments)
+                    .Include(e => e.Attachments).ThenInclude(a => a.AttachmentContent)
                     .OrderBy(e => e.SentDate)
                     .Skip(offset)
                     .Take(batchSize)
