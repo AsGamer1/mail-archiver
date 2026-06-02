@@ -7,6 +7,7 @@ using MailArchiver.ViewModels;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using MimeKit;
+using Npgsql;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -1244,13 +1245,71 @@ namespace MailArchiver.Services.Core
                             var cleanFileName = MailContentHelper.CleanText(fileName);
                             var contentType = MailContentHelper.CleanText(attachment.ContentType?.MimeType ?? "application/octet-stream");
                             var contentId = !string.IsNullOrEmpty(attachment.ContentId) ? attachment.ContentId.Trim() : null;
-
+                            
+                            var contentBytes = ms.ToArray();
+                            var contentHash = EmailAttachmentContent.CalculateContentHash(contentBytes);
+                            
+                            // Find or create the shared attachment content
+                            var attachmentContent = await _context.EmailAttachmentContents
+                                .FirstOrDefaultAsync(c => c.ContentHash == contentHash);
+                            
+                            if (attachmentContent == null)
+                            {
+                                attachmentContent = new EmailAttachmentContent
+                                {
+                                    ContentHash = contentHash,
+                                    Content = contentBytes,
+                                    Size = ms.Length
+                                };
+                                
+                                _context.EmailAttachmentContents.Add(attachmentContent);
+                                try
+                                {
+                                    await _context.SaveChangesAsync();
+                                }
+                                catch (Exception ex)
+                                {
+                                    // Handle concurrent insert: check if another process created it
+                                    var pgEx = ex;
+                                    bool isUniqueViolation = false;
+                                    
+                                    while (pgEx != null)
+                                    {
+                                        if (pgEx is PostgresException postgresEx && postgresEx.SqlState == "23505")
+                                        {
+                                            isUniqueViolation = true;
+                                            break;
+                                        }
+                                        pgEx = pgEx.InnerException;
+                                    }
+                                    
+                                    if (isUniqueViolation)
+                                    {
+                                        _logger.LogDebug("Concurrent insert for EmailAttachmentContent hash {Hash}, reloading", contentHash);
+                                        _context.Entry(attachmentContent).State = EntityState.Detached;
+                                        attachmentContent = await _context.EmailAttachmentContents
+                                            .AsNoTracking()
+                                            .FirstOrDefaultAsync(c => c.ContentHash == contentHash);
+                                        
+                                        if (attachmentContent == null)
+                                        {
+                                            _logger.LogError("EmailAttachmentContent with hash {Hash} not found after unique violation", contentHash);
+                                            throw;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+                            
                             var emailAttachment = new EmailAttachment
                             {
                                 FileName = cleanFileName,
                                 ContentType = contentType,
                                 ContentId = contentId,
-                                Content = ms.ToArray(),
+                                EmailAttachmentContentId = attachmentContent.Id,
                                 Size = ms.Length
                             };
 
