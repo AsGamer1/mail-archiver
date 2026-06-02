@@ -96,6 +96,7 @@ namespace MailArchiver.Services.Core
 
                 if (!string.IsNullOrEmpty(tsQuery))
                 {
+                    // Use EXISTS subquery for attachment filename tsvector to allow index usage
                     searchConditions.Add($@"
                         (
                             to_tsvector('simple', 
@@ -107,7 +108,11 @@ namespace MailArchiver.Services.Core
                                 COALESCE(""Bcc"", '')) 
                             @@ to_tsquery('simple', @param{paramCounter})
                             OR
-                            to_tsvector('simple', COALESCE(a.""FileName"", '')) @@ to_tsquery('simple', @param{paramCounter})
+                            EXISTS (
+                                SELECT 1 FROM mail_archiver.""EmailAttachments"" a
+                                WHERE a.""ArchivedEmailId"" = e.""Id""
+                                AND to_tsvector('simple', COALESCE(a.""FileName"", '')) @@ to_tsquery('simple', @param{paramCounter})
+                            )
                         )");
                     parameters.Add(new Npgsql.NpgsqlParameter($"@param{paramCounter}", tsQuery));
                     paramCounter++;
@@ -122,7 +127,11 @@ namespace MailArchiver.Services.Core
                         POSITION(LOWER(@param{paramCounter}) IN LOWER(COALESCE(""To"", ''))) > 0 OR
                         POSITION(LOWER(@param{paramCounter}) IN LOWER(COALESCE(""Cc"", ''))) > 0 OR
                         POSITION(LOWER(@param{paramCounter}) IN LOWER(COALESCE(""Bcc"", ''))) > 0 OR
-                        POSITION(LOWER(@param{paramCounter}) IN LOWER(COALESCE(a.""FileName"", ''))) > 0
+                        EXISTS (
+                            SELECT 1 FROM mail_archiver.""EmailAttachments"" a
+                            WHERE a.""ArchivedEmailId"" = e.""Id""
+                            AND POSITION(LOWER(@param{paramCounter}) IN LOWER(COALESCE(a.""FileName"", ''))) > 0
+                        )
                     )");
                     parameters.Add(new Npgsql.NpgsqlParameter($"@param{paramCounter}", phrase));
                     paramCounter++;
@@ -235,7 +244,6 @@ namespace MailArchiver.Services.Core
             var countSql = $@"
                 SELECT COUNT(DISTINCT e.""Id"")
                 FROM mail_archiver.""ArchivedEmails"" e
-                LEFT JOIN mail_archiver.""EmailAttachments"" a ON a.""ArchivedEmailId"" = e.""Id""
                 {whereClause}";
 
             var totalCount = await ExecuteScalarQueryAsync<int>(countSql, CloneParameters(parameters));
@@ -243,18 +251,17 @@ namespace MailArchiver.Services.Core
             // Build ORDER BY clause
             var orderByClause = GetOrderByClause(sortBy, sortOrder);
 
-            // Data query
-            var dataSql = $@"
-                SELECT DISTINCT e.""Id"", e.""MailAccountId"", e.""MessageId"", e.""Subject"", e.""Body"", e.""HtmlBody"",
-                       e.""From"", e.""To"", e.""Cc"", e.""Bcc"", e.""SentDate"", e.""ReceivedDate"",
-                       e.""IsOutgoing"", e.""HasAttachments"", e.""FolderName"", e.""IsLocked"",
-                       ma.""Id"" as ""AccountId"", ma.""Name"" as ""AccountName"", ma.""EmailAddress"" as ""AccountEmail""
-                FROM mail_archiver.""ArchivedEmails"" e
-                LEFT JOIN mail_archiver.""EmailAttachments"" a ON a.""ArchivedEmailId"" = e.""Id""
-                INNER JOIN mail_archiver.""MailAccounts"" ma ON e.""MailAccountId"" = ma.""Id""
-                {whereClause}
-                {orderByClause}
-                LIMIT {take} OFFSET {skip}";
+                 // Data query (limit body/html length to reduce payload)
+                 var dataSql = $@"
+                  SELECT DISTINCT e.""Id"", e.""MailAccountId"", e.""MessageId"", e.""Subject"", e.""Body"", e.""HtmlBody"",
+                      e.""From"", e.""To"", e.""Cc"", e.""Bcc"", e.""SentDate"", e.""ReceivedDate"",
+                      e.""IsOutgoing"", e.""HasAttachments"", e.""FolderName"", e.""IsLocked"",
+                      ma.""Id"" as ""AccountId"", ma.""Name"" as ""AccountName"", ma.""EmailAddress"" as ""AccountEmail""
+                  FROM mail_archiver.""ArchivedEmails"" e
+                  INNER JOIN mail_archiver.""MailAccounts"" ma ON e.""MailAccountId"" = ma.""Id""
+                  {whereClause}
+                  {orderByClause}
+                  LIMIT {take} OFFSET {skip}";
 
             var emails = await ExecuteDataQueryAsync(dataSql, CloneParameters(parameters));
 
