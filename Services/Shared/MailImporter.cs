@@ -164,31 +164,46 @@ namespace MailArchiver.Services.Shared
                                     // a unique-constraint race when multiple importer tasks run concurrently.
                                     await context.SaveChangesAsync();
                                 }
-                                catch (DbUpdateException dbEx)
+                                catch (Exception ex)
                                 {
-                                    // If another process inserted the same hash concurrently,
-                                    // Postgres will raise a unique violation (23505). In that case,
-                                    // detach our attempted entity and reload the existing one.
-                                    if (dbEx.InnerException is PostgresException pgEx && pgEx.SqlState == "23505")
+                                    // Check for PostgresException (unique violation) anywhere in the exception chain
+                                    var pgEx = ex;
+                                    bool isUniqueViolation = false;
+                                    
+                                    while (pgEx != null)
                                     {
-                                        _logger.LogDebug(dbEx, "Concurrent insert for EmailAttachmentContent hash {Hash}, reloading", contentHash);
-                                        try
+                                        if (pgEx is PostgresException postgresEx && postgresEx.SqlState == "23505")
                                         {
-                                            context.Entry(existingContent).State = EntityState.Detached;
-                                            existingContent = await context.EmailAttachmentContents.FirstOrDefaultAsync(c => c.ContentHash == contentHash);
-                                            if (existingContent == null)
-                                            {
-                                                // If for some reason it still doesn't exist, rethrow to surface the error
-                                                throw;
-                                            }
+                                            isUniqueViolation = true;
+                                            break;
                                         }
-                                        catch
+                                        pgEx = pgEx.InnerException;
+                                    }
+                                    
+                                    if (isUniqueViolation)
+                                    {
+                                        _logger.LogDebug("Concurrent insert for EmailAttachmentContent hash {Hash}, reloading", contentHash);
+                                        // Detach the entity that failed to insert
+                                        context.Entry(existingContent).State = EntityState.Detached;
+                                        
+                                        // Reload the existing content from the database
+                                        existingContent = await context.EmailAttachmentContents
+                                            .AsNoTracking()
+                                            .FirstOrDefaultAsync(c => c.ContentHash == contentHash);
+                                        
+                                        if (existingContent == null)
                                         {
+                                            // If it still doesn't exist, something is wrong
+                                            _logger.LogError("EmailAttachmentContent with hash {Hash} not found after unique violation", contentHash);
                                             throw;
                                         }
+                                        
+                                        // Re-attach in a trackable state if needed for the rest of the operation
+                                        existingContent = context.EmailAttachmentContents.Attach(existingContent).Entity;
                                     }
                                     else
                                     {
+                                        // Not a unique violation, rethrow
                                         throw;
                                     }
                                 }
