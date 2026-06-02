@@ -231,13 +231,11 @@ namespace MailArchiver.Services.Core
 
             var whereClause = whereConditions.Any() ? "WHERE " + string.Join(" AND ", whereConditions) : "";
 
-            const string attachmentJoinClause = "LEFT JOIN mail_archiver.""EmailAttachments"" a ON a.""ArchivedEmailId"" = e.""Id""";
-
             // Count query
             var countSql = $@"
                 SELECT COUNT(DISTINCT e.""Id"")
                 FROM mail_archiver.""ArchivedEmails"" e
-                {attachmentJoinClause}
+                LEFT JOIN mail_archiver.""EmailAttachments"" a ON a.""ArchivedEmailId"" = e.""Id""
                 {whereClause}";
 
             var totalCount = await ExecuteScalarQueryAsync<int>(countSql, CloneParameters(parameters));
@@ -252,7 +250,7 @@ namespace MailArchiver.Services.Core
                        e.""IsOutgoing"", e.""HasAttachments"", e.""FolderName"", e.""IsLocked"",
                        ma.""Id"" as ""AccountId"", ma.""Name"" as ""AccountName"", ma.""EmailAddress"" as ""AccountEmail""
                 FROM mail_archiver.""ArchivedEmails"" e
-                {attachmentJoinClause}
+                LEFT JOIN mail_archiver.""EmailAttachments"" a ON a.""ArchivedEmailId"" = e.""Id""
                 INNER JOIN mail_archiver.""MailAccounts"" ma ON e.""MailAccountId"" = ma.""Id""
                 {whereClause}
                 {orderByClause}
