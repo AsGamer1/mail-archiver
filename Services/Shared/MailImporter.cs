@@ -3,6 +3,7 @@ using MailArchiver.Models;
 using MailArchiver.Services.Providers.Eml;
 using MailArchiver.Utilities;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using Microsoft.Extensions.Options;
 using MimeKit;
 using System.Text;
@@ -157,6 +158,40 @@ namespace MailArchiver.Services.Shared
                                 };
 
                                 context.EmailAttachmentContents.Add(existingContent);
+                                try
+                                {
+                                    // Persist the content immediately to obtain the Id and avoid
+                                    // a unique-constraint race when multiple importer tasks run concurrently.
+                                    await context.SaveChangesAsync();
+                                }
+                                catch (DbUpdateException dbEx)
+                                {
+                                    // If another process inserted the same hash concurrently,
+                                    // Postgres will raise a unique violation (23505). In that case,
+                                    // detach our attempted entity and reload the existing one.
+                                    if (dbEx.InnerException is PostgresException pgEx && pgEx.SqlState == "23505")
+                                    {
+                                        _logger.LogDebug(dbEx, "Concurrent insert for EmailAttachmentContent hash {Hash}, reloading", contentHash);
+                                        try
+                                        {
+                                            context.Entry(existingContent).State = EntityState.Detached;
+                                            existingContent = await context.EmailAttachmentContents.FirstOrDefaultAsync(c => c.ContentHash == contentHash);
+                                            if (existingContent == null)
+                                            {
+                                                // If for some reason it still doesn't exist, rethrow to surface the error
+                                                throw;
+                                            }
+                                        }
+                                        catch
+                                        {
+                                            throw;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
                             }
 
                             archivedEmail.Attachments.Add(new EmailAttachment
