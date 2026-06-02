@@ -5,6 +5,16 @@ services:
   mailarchive-app:
     build: .
     restart: always
+    environment:
+      # Database Connection
+      - ConnectionStrings__DefaultConnection=Host=postgres;Database=MailArchiver;Username=mailuser;Password=masterkey;
+
+      # Authentication Settings
+      - Authentication__Username=admin
+      - Authentication__Password=secure123!
+
+      # TimeZone Settings
+      - TimeZone__DisplayTimeZoneId=Europe/Madrid
     ports:
       - "5000:5000"
     networks:
