@@ -148,6 +148,23 @@ namespace MailArchiver.Migrations
                     END IF;
                 END $$;
             ");
+
+            migrationBuilder.Sql(@"
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM pg_indexes
+                        WHERE schemaname = 'mail_archiver'
+                        AND tablename = 'EmailAttachments'
+                        AND indexname = 'idx_emailattachments_filename_fulltext'
+                    ) THEN
+                        CREATE INDEX ""idx_emailattachments_filename_fulltext""
+                        ON mail_archiver.""EmailAttachments""
+                        USING GIN (to_tsvector('simple', COALESCE(""FileName"", '')));
+                    END IF;
+                END $$;
+            ");
         }
 
         /// <inheritdoc />
@@ -257,6 +274,21 @@ namespace MailArchiver.Migrations
                         AND table_name = 'EmailAttachmentContents'
                     ) THEN
                         DROP TABLE mail_archiver.""EmailAttachmentContents"";
+                    END IF;
+                END $$;
+            ");
+
+            migrationBuilder.Sql(@"
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM pg_indexes
+                        WHERE schemaname = 'mail_archiver'
+                        AND tablename = 'EmailAttachments'
+                        AND indexname = 'idx_emailattachments_filename_fulltext'
+                    ) THEN
+                        DROP INDEX mail_archiver.""idx_emailattachments_filename_fulltext"";
                     END IF;
                 END $$;
             ");

@@ -97,14 +97,18 @@ namespace MailArchiver.Services.Core
                 if (!string.IsNullOrEmpty(tsQuery))
                 {
                     searchConditions.Add($@"
-                        to_tsvector('simple', 
-                            COALESCE(""Subject"", '') || ' ' || 
-                            COALESCE(""Body"", '') || ' ' || 
-                            COALESCE(""From"", '') || ' ' || 
-                            COALESCE(""To"", '') || ' ' || 
-                            COALESCE(""Cc"", '') || ' ' || 
-                            COALESCE(""Bcc"", '')) 
-                        @@ to_tsquery('simple', @param{paramCounter})");
+                        (
+                            to_tsvector('simple', 
+                                COALESCE(""Subject"", '') || ' ' || 
+                                COALESCE(""Body"", '') || ' ' || 
+                                COALESCE(""From"", '') || ' ' || 
+                                COALESCE(""To"", '') || ' ' || 
+                                COALESCE(""Cc"", '') || ' ' || 
+                                COALESCE(""Bcc"", '')) 
+                            @@ to_tsquery('simple', @param{paramCounter})
+                            OR
+                            to_tsvector('simple', COALESCE(a.""FileName"", '')) @@ to_tsquery('simple', @param{paramCounter})
+                        )");
                     parameters.Add(new Npgsql.NpgsqlParameter($"@param{paramCounter}", tsQuery));
                     paramCounter++;
                 }
@@ -117,7 +121,8 @@ namespace MailArchiver.Services.Core
                         POSITION(LOWER(@param{paramCounter}) IN LOWER(COALESCE(""From"", ''))) > 0 OR
                         POSITION(LOWER(@param{paramCounter}) IN LOWER(COALESCE(""To"", ''))) > 0 OR
                         POSITION(LOWER(@param{paramCounter}) IN LOWER(COALESCE(""Cc"", ''))) > 0 OR
-                        POSITION(LOWER(@param{paramCounter}) IN LOWER(COALESCE(""Bcc"", ''))) > 0
+                        POSITION(LOWER(@param{paramCounter}) IN LOWER(COALESCE(""Bcc"", ''))) > 0 OR
+                        POSITION(LOWER(@param{paramCounter}) IN LOWER(COALESCE(a.""FileName"", ''))) > 0
                     )");
                     parameters.Add(new Npgsql.NpgsqlParameter($"@param{paramCounter}", phrase));
                     paramCounter++;
@@ -226,10 +231,13 @@ namespace MailArchiver.Services.Core
 
             var whereClause = whereConditions.Any() ? "WHERE " + string.Join(" AND ", whereConditions) : "";
 
+            const string attachmentJoinClause = "LEFT JOIN mail_archiver.""EmailAttachments"" a ON a.""ArchivedEmailId"" = e.""Id""";
+
             // Count query
             var countSql = $@"
-                SELECT COUNT(*)
-                FROM mail_archiver.""ArchivedEmails""
+                SELECT COUNT(DISTINCT e.""Id"")
+                FROM mail_archiver.""ArchivedEmails"" e
+                {attachmentJoinClause}
                 {whereClause}";
 
             var totalCount = await ExecuteScalarQueryAsync<int>(countSql, CloneParameters(parameters));
@@ -239,11 +247,12 @@ namespace MailArchiver.Services.Core
 
             // Data query
             var dataSql = $@"
-                SELECT e.""Id"", e.""MailAccountId"", e.""MessageId"", e.""Subject"", e.""Body"", e.""HtmlBody"",
+                SELECT DISTINCT e.""Id"", e.""MailAccountId"", e.""MessageId"", e.""Subject"", e.""Body"", e.""HtmlBody"",
                        e.""From"", e.""To"", e.""Cc"", e.""Bcc"", e.""SentDate"", e.""ReceivedDate"",
                        e.""IsOutgoing"", e.""HasAttachments"", e.""FolderName"", e.""IsLocked"",
                        ma.""Id"" as ""AccountId"", ma.""Name"" as ""AccountName"", ma.""EmailAddress"" as ""AccountEmail""
                 FROM mail_archiver.""ArchivedEmails"" e
+                {attachmentJoinClause}
                 INNER JOIN mail_archiver.""MailAccounts"" ma ON e.""MailAccountId"" = ma.""Id""
                 {whereClause}
                 {orderByClause}
@@ -494,20 +503,23 @@ namespace MailArchiver.Services.Core
                             EF.Functions.ILike(e.To, $"%{escapedWord}%") ||
                             EF.Functions.ILike(e.Body, $"%{escapedWord}%") ||
                             EF.Functions.ILike(e.Cc, $"%{escapedWord}%") ||
-                            EF.Functions.ILike(e.Bcc, $"%{escapedWord}%")
+                            EF.Functions.ILike(e.Bcc, $"%{escapedWord}%") ||
+                            e.Attachments.Any(a => EF.Functions.ILike(a.FileName, $"%{escapedWord}%"))
                         );
                     }
                 }
 
                 foreach (var phrase in phrases)
                 {
+                    var lowerPhrase = phrase.ToLower();
                     searchQuery = searchQuery.Where(e =>
-                        (e.Subject != null && e.Subject.ToLower().Contains(phrase.ToLower())) ||
-                        (e.From != null && e.From.ToLower().Contains(phrase.ToLower())) ||
-                        (e.To != null && e.To.ToLower().Contains(phrase.ToLower())) ||
-                        (e.Body != null && e.Body.ToLower().Contains(phrase.ToLower())) ||
-                        (e.Cc != null && e.Cc.ToLower().Contains(phrase.ToLower())) ||
-                        (e.Bcc != null && e.Bcc.ToLower().Contains(phrase.ToLower()))
+                        (e.Subject != null && e.Subject.ToLower().Contains(lowerPhrase)) ||
+                        (e.From != null && e.From.ToLower().Contains(lowerPhrase)) ||
+                        (e.To != null && e.To.ToLower().Contains(lowerPhrase)) ||
+                        (e.Body != null && e.Body.ToLower().Contains(lowerPhrase)) ||
+                        (e.Cc != null && e.Cc.ToLower().Contains(lowerPhrase)) ||
+                        (e.Bcc != null && e.Bcc.ToLower().Contains(lowerPhrase)) ||
+                        e.Attachments.Any(a => a.FileName != null && a.FileName.ToLower().Contains(lowerPhrase))
                     );
                 }
 
