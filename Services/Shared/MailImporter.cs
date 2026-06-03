@@ -139,6 +139,7 @@ namespace MailArchiver.Services.Shared
                 await using var transaction = await context.Database.BeginTransactionAsync();
                 try
                 {
+                    var attachmentInfoList = new List<(string Hash, byte[] Content, string FileName, string ContentType, string? ContentId, long Size)>();
                     if (allAttachments.Any())
                     {
                         foreach (var attachment in allAttachments)
@@ -150,40 +151,48 @@ namespace MailArchiver.Services.Shared
                                 var fileName = GetAttachmentFileName(attachment);
                                 var contentBytes = ms.ToArray();
                                 var contentHash = EmailAttachmentContent.CalculateContentHash(contentBytes);
-
-                                if (!attachmentContentCache.TryGetValue(contentHash, out var existingContent))
-                                {
-                                    existingContent = await context.EmailAttachmentContents
-                                        .FirstOrDefaultAsync(c => c.ContentHash == contentHash);
-
-                                    if (existingContent == null)
-                                    {
-                                        existingContent = new EmailAttachmentContent
-                                        {
-                                            ContentHash = contentHash,
-                                            Content = contentBytes,
-                                            Size = ms.Length
-                                        };
-
-                                        context.EmailAttachmentContents.Add(existingContent);
-                                    }
-
-                                    attachmentContentCache[contentHash] = existingContent;
-                                }
-
-                                archivedEmail.Attachments.Add(new EmailAttachment
-                                {
-                                    FileName = MailContentHelper.CleanText(fileName),
-                                    ContentType = MailContentHelper.CleanText(attachment.ContentType?.MimeType ?? "application/octet-stream"),
-                                    ContentId = !string.IsNullOrEmpty(attachment.ContentId) ? MailContentHelper.CleanText(attachment.ContentId) : null,
-                                    AttachmentContent = existingContent,
-                                    Size = ms.Length
-                                });
+                                attachmentInfoList.Add((contentHash, contentBytes, fileName, MailContentHelper.CleanText(attachment.ContentType?.MimeType ?? "application/octet-stream"),
+                                    !string.IsNullOrEmpty(attachment.ContentId) ? MailContentHelper.CleanText(attachment.ContentId) : null, ms.Length));
                             }
                             catch (Exception ex)
                             {
                                 _logger.LogWarning(ex, "Job {JobId}: Failed to process attachment", jobId);
                             }
+                        }
+                    }
+
+                    if (attachmentInfoList.Any())
+                    {
+                        var hashKeys = attachmentInfoList.Select(x => x.Hash).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                        var existingContents = await context.EmailAttachmentContents
+                            .Where(c => hashKeys.Contains(c.ContentHash))
+                            .ToDictionaryAsync(c => c.ContentHash, StringComparer.OrdinalIgnoreCase);
+
+                        foreach (var attachmentInfo in attachmentInfoList)
+                        {
+                            if (!attachmentContentCache.TryGetValue(attachmentInfo.Hash, out var existingContent))
+                            {
+                                if (!existingContents.TryGetValue(attachmentInfo.Hash, out existingContent))
+                                {
+                                    existingContent = new EmailAttachmentContent
+                                    {
+                                        ContentHash = attachmentInfo.Hash,
+                                        Content = attachmentInfo.Content,
+                                        Size = attachmentInfo.Size
+                                    };
+                                    context.EmailAttachmentContents.Add(existingContent);
+                                }
+                                attachmentContentCache[attachmentInfo.Hash] = existingContent;
+                            }
+
+                            archivedEmail.Attachments.Add(new EmailAttachment
+                            {
+                                FileName = MailContentHelper.CleanText(attachmentInfo.FileName),
+                                ContentType = attachmentInfo.ContentType,
+                                ContentId = attachmentInfo.ContentId,
+                                AttachmentContent = existingContent,
+                                Size = attachmentInfo.Size
+                            });
                         }
                     }
 
@@ -212,6 +221,10 @@ namespace MailArchiver.Services.Shared
 
                             _logger.LogDebug("Concurrent insert detected while saving EmailAttachmentContent values, reloading existing hashes");
 
+                            await transaction.RollbackAsync();
+                            await transaction.DisposeAsync();
+                            transaction = await context.Database.BeginTransactionAsync();
+
                             foreach (var hash in attachmentContentCache.Keys.ToList())
                             {
                                 var content = attachmentContentCache[hash];
@@ -231,9 +244,10 @@ namespace MailArchiver.Services.Shared
                                     attachment.EmailAttachmentContentId = existingContent.Id;
                                 }
 
-                                var localEntry = context.ChangeTracker.Entries<EmailAttachmentContent>()
-                                    .FirstOrDefault(e => e.Entity.ContentHash == hash && e.State == EntityState.Added);
-                                if (localEntry != null)
+                                var localEntries = context.ChangeTracker.Entries<EmailAttachmentContent>()
+                                    .Where(e => e.Entity.ContentHash == hash && e.State == EntityState.Added)
+                                    .ToList();
+                                foreach (var localEntry in localEntries)
                                     localEntry.State = EntityState.Detached;
 
                                 attachmentContentCache[hash] = existingContent;
@@ -294,11 +308,11 @@ namespace MailArchiver.Services.Shared
             }
             catch { return null; }
         }
-
-        public static bool DetermineIfOutgoing(MimeMessage message, MailAccount account, string folderName)
-        {
-            var fromAddr = message.From.Mailboxes.FirstOrDefault()?.Address;
-            bool isOutgoingEmail = !string.IsNullOrEmpty(fromAddr) &&
+                                                    var localEntries = context.ChangeTracker.Entries<EmailAttachmentContent>()
+                                                        .Where(e => e.Entity.ContentHash == hash && e.State == EntityState.Added)
+                                                        .ToList();
+                                                    foreach (var localEntry in localEntries)
+                                                        localEntry.State = EntityState.Detached;
                 fromAddr.Equals(account.EmailAddress, StringComparison.OrdinalIgnoreCase);
             bool isOutgoingFolder = IsOutgoingFolderByName(folderName);
             bool isDrafts = IsDraftsFolder(folderName);
