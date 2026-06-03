@@ -216,7 +216,13 @@ namespace MailArchiver.Controllers
                 model.PageSize,
                 allowedAccountIds,
                 model.SortBy ?? "SentDate",
-                model.SortOrder ?? "desc");
+                model.SortOrder ?? "desc",
+                model.HasAttachment,
+                model.MinAttachmentSize,
+                model.MaxAttachmentSize,
+                model.FileNameWildcard,
+                model.MinAttachments,
+                model.MaxAttachments);
 
             model.SearchResults = emails;
             model.TotalResults = totalCount;

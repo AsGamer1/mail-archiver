@@ -79,12 +79,12 @@ namespace MailArchiver.Migrations
                     INSERT INTO mail_archiver.""EmailAttachmentContents"" (""ContentHash"", ""Content"", ""Size"")
                     SELECT hashed.""ContentHash"", hashed.""Content"", hashed.""Size""
                     FROM (
-                        SELECT
-                            encode(digest(""Content"", 'sha256'), 'hex') AS ""ContentHash"",
-                            ""Content"",
-                            octet_length(""Content"") AS ""Size""
-                        FROM mail_archiver.""EmailAttachments""
-                        GROUP BY encode(digest(""Content"", 'sha256'), 'hex'), ""Content"", octet_length(""Content"")
+                            SELECT
+                                encode(digest(COALESCE(""Content"", '\\x'::bytea), 'sha256'), 'hex') AS ""ContentHash"",
+                                COALESCE(""Content"", '\\x'::bytea) AS ""Content"",
+                                octet_length(COALESCE(""Content"", '\\x'::bytea)) AS ""Size""
+                            FROM mail_archiver.""EmailAttachments""
+                            GROUP BY encode(digest(COALESCE(""Content"", '\\x'::bytea), 'sha256'), 'hex'), COALESCE(""Content"", '\\x'::bytea), octet_length(COALESCE(""Content"", '\\x'::bytea))
                     ) AS hashed
                     ON CONFLICT DO NOTHING;
                 END $$;

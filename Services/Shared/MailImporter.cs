@@ -26,8 +26,6 @@ namespace MailArchiver.Services.Shared
 
         public async Task<ImportResult> ImportEmailToDatabase(MimeMessage message, MailAccount account, string jobId, string targetFolder)
         {
-            try
-            {
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<MailArchiverDbContext>();
 
@@ -136,12 +134,14 @@ namespace MailArchiver.Services.Shared
 
                 var attachmentContentCache = new Dictionary<string, EmailAttachmentContent>(StringComparer.OrdinalIgnoreCase);
 
-                await using var transaction = await context.Database.BeginTransactionAsync();
+                var transaction = await context.Database.BeginTransactionAsync();
                 try
                 {
-                    var attachmentInfoList = new List<(string Hash, byte[] Content, string FileName, string ContentType, string? ContentId, long Size)>();
-                    if (allAttachments.Any())
+                    try
                     {
+                        var attachmentInfoList = new List<(string Hash, byte[] Content, string FileName, string ContentType, string? ContentId, long Size)>();
+                        if (allAttachments.Any())
+                        {
                         foreach (var attachment in allAttachments)
                         {
                             try
@@ -273,6 +273,11 @@ namespace MailArchiver.Services.Shared
                 _logger.LogError(ex, "Job {JobId}: Failed to import email", jobId);
                 return ImportResult.CreateFailed(ex.Message);
             }
+            finally
+            {
+                if (transaction != null)
+                    await transaction.DisposeAsync();
+            }
         }
 
         private string GenerateMessageId(MimeMessage message, string jobId)
@@ -308,11 +313,11 @@ namespace MailArchiver.Services.Shared
             }
             catch { return null; }
         }
-                                                    var localEntries = context.ChangeTracker.Entries<EmailAttachmentContent>()
-                                                        .Where(e => e.Entity.ContentHash == hash && e.State == EntityState.Added)
-                                                        .ToList();
-                                                    foreach (var localEntry in localEntries)
-                                                        localEntry.State = EntityState.Detached;
+
+        public static bool DetermineIfOutgoing(MimeMessage message, MailAccount account, string folderName)
+        {
+            var fromAddr = message.From.Mailboxes.FirstOrDefault()?.Address;
+            bool isOutgoingEmail = !string.IsNullOrEmpty(fromAddr) &&
                 fromAddr.Equals(account.EmailAddress, StringComparison.OrdinalIgnoreCase);
             bool isOutgoingFolder = IsOutgoingFolderByName(folderName);
             bool isDrafts = IsDraftsFolder(folderName);

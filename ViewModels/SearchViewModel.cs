@@ -4,12 +4,21 @@ namespace MailArchiver.Models.ViewModels
 {
     public class SearchViewModel
     {
-        public string SearchTerm { get; set; }
+        public string SearchTerm { get; set; } = string.Empty;
         public DateTime? FromDate { get; set; }
         public DateTime? ToDate { get; set; }
         public int? SelectedAccountId { get; set; }
-        public string SelectedFolder { get; set; }
+        public string SelectedFolder { get; set; } = string.Empty;
         public bool? IsOutgoing { get; set; }
+
+        // Attachment filters
+        public bool? HasAttachment { get; set; }
+        public long? MinAttachmentSize { get; set; }
+        public long? MaxAttachmentSize { get; set; }
+        public string FileNameWildcard { get; set; } = string.Empty;
+        public int? MinAttachments { get; set; }
+        public int? MaxAttachments { get; set; }
+
         public int PageNumber { get; set; } = 1;
         public int PageSize { get; set; } = 20;
         public string UserTimezone { get; set; } = "UTC";
@@ -29,9 +38,9 @@ namespace MailArchiver.Models.ViewModels
         public string SortOrder { get; set; } = "desc";
 
         // Dropdown-Optionen
-        public List<SelectListItem> AccountOptions { get; set; }
-        public List<SelectListItem> FolderOptions { get; set; }
-        public List<SelectListItem> DirectionOptions { get; set; }
+        public List<SelectListItem> AccountOptions { get; set; } = new List<SelectListItem>();
+        public List<SelectListItem> FolderOptions { get; set; } = new List<SelectListItem>();
+        public List<SelectListItem> DirectionOptions { get; set; } = new List<SelectListItem>();
 
         // Folder tree for hierarchical display
         public List<FolderTreeNode> FolderTree { get; set; } = new List<FolderTreeNode>();
@@ -56,7 +65,7 @@ namespace MailArchiver.Models.ViewModels
         }
 
         // Suchergebnisse
-        public List<ArchivedEmail> SearchResults { get; set; }
+        public List<ArchivedEmail> SearchResults { get; set; } = new List<ArchivedEmail>();
         public int TotalResults { get; set; }
         public int TotalPages => (int)Math.Ceiling(TotalResults / (double)PageSize);
 

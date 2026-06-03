@@ -51,7 +51,13 @@ namespace MailArchiver.Services.Core
             int take,
             List<int> allowedAccountIds = null,
             string sortBy = "SentDate",
-            string sortOrder = "desc")
+            string sortOrder = "desc",
+            bool? hasAttachment = null,
+            long? minAttachmentSize = null,
+            long? maxAttachmentSize = null,
+            string fileNameWildcard = null,
+            int? minAttachments = null,
+            int? maxAttachments = null)
         {
             var startTime = DateTime.UtcNow;
 
@@ -61,12 +67,12 @@ namespace MailArchiver.Services.Core
 
             try
             {
-                return await SearchEmailsOptimizedAsync(searchTerm, fromDate, toDate, accountId, folderName, isOutgoing, skip, take, allowedAccountIds, sortBy, sortOrder);
+                return await SearchEmailsOptimizedAsync(searchTerm, fromDate, toDate, accountId, folderName, isOutgoing, skip, take, allowedAccountIds, sortBy, sortOrder, hasAttachment, minAttachmentSize, maxAttachmentSize, fileNameWildcard, minAttachments, maxAttachments);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Optimized search failed, falling back to Entity Framework search");
-                return await SearchEmailsEFAsync(searchTerm, fromDate, toDate, accountId, folderName, isOutgoing, skip, take, allowedAccountIds);
+                return await SearchEmailsEFAsync(searchTerm, fromDate, toDate, accountId, folderName, isOutgoing, skip, take, allowedAccountIds, hasAttachment, minAttachmentSize, maxAttachmentSize, fileNameWildcard, minAttachments, maxAttachments);
             }
         }
 
@@ -81,7 +87,13 @@ namespace MailArchiver.Services.Core
             int take,
             List<int> allowedAccountIds = null,
             string sortBy = "SentDate",
-            string sortOrder = "desc")
+            string sortOrder = "desc",
+            bool? hasAttachment = null,
+            long? minAttachmentSize = null,
+            long? maxAttachmentSize = null,
+            string fileNameWildcard = null,
+            int? minAttachments = null,
+            int? maxAttachments = null)
         {
             var startTime = DateTime.UtcNow;
             var whereConditions = new List<string>();
@@ -238,6 +250,57 @@ namespace MailArchiver.Services.Core
                 paramCounter++;
             }
 
+            // Attachment filters
+            if (hasAttachment.HasValue)
+            {
+                whereConditions.Add($@"e.""HasAttachments"" = @param{paramCounter}");
+                parameters.Add(new Npgsql.NpgsqlParameter($"@param{paramCounter}", hasAttachment.Value));
+                paramCounter++;
+            }
+
+            if (minAttachmentSize.HasValue || maxAttachmentSize.HasValue)
+            {
+                var conditions = new List<string>();
+                if (minAttachmentSize.HasValue)
+                {
+                    conditions.Add($"a.\"Size\" >= @param{paramCounter}");
+                    parameters.Add(new Npgsql.NpgsqlParameter($"@param{paramCounter}", minAttachmentSize.Value));
+                    paramCounter++;
+                }
+                if (maxAttachmentSize.HasValue)
+                {
+                    conditions.Add($"a.\"Size\" <= @param{paramCounter}");
+                    parameters.Add(new Npgsql.NpgsqlParameter($"@param{paramCounter}", maxAttachmentSize.Value));
+                    paramCounter++;
+                }
+
+                var combined = string.Join(" AND ", conditions);
+                whereConditions.Add($@"EXISTS (SELECT 1 FROM mail_archiver.""EmailAttachments"" a WHERE a.""ArchivedEmailId"" = e.""Id"" AND {combined})");
+            }
+
+            if (!string.IsNullOrEmpty(fileNameWildcard))
+            {
+                // translate '*' to '%' for SQL wildcard, if no wildcard present assume contains
+                var pattern = fileNameWildcard.Contains('%') || fileNameWildcard.Contains('*') ? fileNameWildcard.Replace('*', '%') : $"%{fileNameWildcard}%";
+                whereConditions.Add($@"EXISTS (SELECT 1 FROM mail_archiver.""EmailAttachments"" a WHERE a.""ArchivedEmailId"" = e.""Id"" AND a.""FileName"" ILIKE @param{paramCounter})");
+                parameters.Add(new Npgsql.NpgsqlParameter($"@param{paramCounter}", pattern));
+                paramCounter++;
+            }
+
+            if (minAttachments.HasValue)
+            {
+                whereConditions.Add($@"(SELECT COUNT(*) FROM mail_archiver.""EmailAttachments"" a WHERE a.""ArchivedEmailId"" = e.""Id"") >= @param{paramCounter}");
+                parameters.Add(new Npgsql.NpgsqlParameter($"@param{paramCounter}", minAttachments.Value));
+                paramCounter++;
+            }
+
+            if (maxAttachments.HasValue)
+            {
+                whereConditions.Add($@"(SELECT COUNT(*) FROM mail_archiver.""EmailAttachments"" a WHERE a.""ArchivedEmailId"" = e.""Id"") <= @param{paramCounter}");
+                parameters.Add(new Npgsql.NpgsqlParameter($"@param{paramCounter}", maxAttachments.Value));
+                paramCounter++;
+            }
+
             var whereClause = whereConditions.Any() ? "WHERE " + string.Join(" AND ", whereConditions) : "";
 
             // Count query
@@ -251,17 +314,17 @@ namespace MailArchiver.Services.Core
             // Build ORDER BY clause
             var orderByClause = GetOrderByClause(sortBy, sortOrder);
 
-                 // Data query (limit body/html length to reduce payload)
-                 var dataSql = $@"
-                  SELECT DISTINCT e.""Id"", e.""MailAccountId"", e.""MessageId"", e.""Subject"", e.""Body"", e.""HtmlBody"",
-                      e.""From"", e.""To"", e.""Cc"", e.""Bcc"", e.""SentDate"", e.""ReceivedDate"",
-                      e.""IsOutgoing"", e.""HasAttachments"", e.""FolderName"", e.""IsLocked"",
-                      ma.""Id"" as ""AccountId"", ma.""Name"" as ""AccountName"", ma.""EmailAddress"" as ""AccountEmail""
-                  FROM mail_archiver.""ArchivedEmails"" e
-                  INNER JOIN mail_archiver.""MailAccounts"" ma ON e.""MailAccountId"" = ma.""Id""
-                  {whereClause}
-                  {orderByClause}
-                  LIMIT {take} OFFSET {skip}";
+            // Data query (limit body/html length to reduce payload)
+            var dataSql = $@"
+                SELECT DISTINCT e.""Id"", e.""MailAccountId"", e.""MessageId"", e.""Subject"", LEFT(e.""Body"", 1000) AS ""Body"", LEFT(e.""HtmlBody"", 1000) AS ""HtmlBody"",
+                       e.""From"", e.""To"", e.""Cc"", e.""Bcc"", e.""SentDate"", e.""ReceivedDate"",
+                       e.""IsOutgoing"", e.""HasAttachments"", e.""FolderName"", e.""IsLocked"",
+                       ma.""Id"" as ""AccountId"", ma.""Name"" as ""AccountName"", ma.""EmailAddress"" as ""AccountEmail""
+                FROM mail_archiver.""ArchivedEmails"" e
+                INNER JOIN mail_archiver.""MailAccounts"" ma ON e.""MailAccountId"" = ma.""Id""
+                {whereClause}
+                {orderByClause}
+                LIMIT {take} OFFSET {skip}";
 
             var emails = await ExecuteDataQueryAsync(dataSql, CloneParameters(parameters));
 
@@ -455,7 +518,13 @@ namespace MailArchiver.Services.Core
             bool? isOutgoing,
             int skip,
             int take,
-            List<int> allowedAccountIds = null)
+            List<int> allowedAccountIds = null,
+            bool? hasAttachment = null,
+            long? minAttachmentSize = null,
+            long? maxAttachmentSize = null,
+            string fileNameWildcard = null,
+            int? minAttachments = null,
+            int? maxAttachments = null)
         {
             var baseQuery = _context.ArchivedEmails.AsNoTracking().AsQueryable();
 
@@ -485,6 +554,28 @@ namespace MailArchiver.Services.Core
 
             if (!string.IsNullOrEmpty(folderName))
                 baseQuery = baseQuery.Where(e => e.FolderName == folderName);
+
+            // Attachment filters (EF fallback)
+            if (hasAttachment.HasValue)
+                baseQuery = baseQuery.Where(e => e.HasAttachments == hasAttachment.Value);
+
+            if (minAttachmentSize.HasValue)
+                baseQuery = baseQuery.Where(e => e.Attachments.Any(a => a.Size >= minAttachmentSize.Value));
+
+            if (maxAttachmentSize.HasValue)
+                baseQuery = baseQuery.Where(e => e.Attachments.Any(a => a.Size <= maxAttachmentSize.Value));
+
+            if (!string.IsNullOrEmpty(fileNameWildcard))
+            {
+                var pattern = fileNameWildcard.Contains('%') || fileNameWildcard.Contains('*') ? fileNameWildcard.Replace('*', '%') : $"%{fileNameWildcard}%";
+                baseQuery = baseQuery.Where(e => e.Attachments.Any(a => EF.Functions.ILike(a.FileName, pattern)));
+            }
+
+            if (minAttachments.HasValue)
+                baseQuery = baseQuery.Where(e => e.Attachments.Count() >= minAttachments.Value);
+
+            if (maxAttachments.HasValue)
+                baseQuery = baseQuery.Where(e => e.Attachments.Count() <= maxAttachments.Value);
 
             IQueryable<ArchivedEmail> searchQuery = baseQuery;
             if (!string.IsNullOrEmpty(searchTerm))
@@ -1226,9 +1317,9 @@ namespace MailArchiver.Services.Core
                     Attachments = new List<EmailAttachment>() // Initialize collection for hash calculation
                 };
 
-                var attachmentInfoList = new List<(string Hash, byte[] Content, string FileName, string ContentType, string? ContentId, long Size)>();
+                // CRITICAL: Prepare attachments BEFORE calculating hash
+                // This ensures the hash includes the attachment content
                 var emailAttachments = new List<EmailAttachment>();
-
                 if (allAttachments.Any())
                 {
                     foreach (var attachment in allAttachments)
@@ -1262,10 +1353,76 @@ namespace MailArchiver.Services.Core
                             var cleanFileName = MailContentHelper.CleanText(fileName);
                             var contentType = MailContentHelper.CleanText(attachment.ContentType?.MimeType ?? "application/octet-stream");
                             var contentId = !string.IsNullOrEmpty(attachment.ContentId) ? attachment.ContentId.Trim() : null;
+                            
                             var contentBytes = ms.ToArray();
                             var contentHash = EmailAttachmentContent.CalculateContentHash(contentBytes);
+                            
+                            // Find or create the shared attachment content
+                            var attachmentContent = await _context.EmailAttachmentContents
+                                .FirstOrDefaultAsync(c => c.ContentHash == contentHash);
+                            
+                            if (attachmentContent == null)
+                            {
+                                attachmentContent = new EmailAttachmentContent
+                                {
+                                    ContentHash = contentHash,
+                                    Content = contentBytes,
+                                    Size = ms.Length
+                                };
+                                
+                                _context.EmailAttachmentContents.Add(attachmentContent);
+                                try
+                                {
+                                    await _context.SaveChangesAsync();
+                                }
+                                catch (Exception ex)
+                                {
+                                    // Handle concurrent insert: check if another process created it
+                                    var pgEx = ex;
+                                    bool isUniqueViolation = false;
+                                    
+                                    while (pgEx != null)
+                                    {
+                                        if (pgEx is PostgresException postgresEx && postgresEx.SqlState == "23505")
+                                        {
+                                            isUniqueViolation = true;
+                                            break;
+                                        }
+                                        pgEx = pgEx.InnerException;
+                                    }
+                                    
+                                    if (isUniqueViolation)
+                                    {
+                                        _logger.LogDebug("Concurrent insert for EmailAttachmentContent hash {Hash}, reloading", contentHash);
+                                        _context.Entry(attachmentContent).State = EntityState.Detached;
+                                        attachmentContent = await _context.EmailAttachmentContents
+                                            .AsNoTracking()
+                                            .FirstOrDefaultAsync(c => c.ContentHash == contentHash);
+                                        
+                                        if (attachmentContent == null)
+                                        {
+                                            _logger.LogError("EmailAttachmentContent with hash {Hash} not found after unique violation", contentHash);
+                                            throw;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+                            
+                            var emailAttachment = new EmailAttachment
+                            {
+                                FileName = cleanFileName,
+                                ContentType = contentType,
+                                ContentId = contentId,
+                                EmailAttachmentContentId = attachmentContent.Id,
+                                Size = ms.Length
+                            };
 
-                            attachmentInfoList.Add((contentHash, contentBytes, cleanFileName, contentType, contentId, ms.Length));
+                            emailAttachments.Add(emailAttachment);
+                            archivedEmail.Attachments.Add(emailAttachment); // Add to collection for hash calculation
                         }
                         catch (Exception ex)
                         {
@@ -1275,128 +1432,23 @@ namespace MailArchiver.Services.Core
                     }
                 }
 
-                var attachmentContentCache = new Dictionary<string, EmailAttachmentContent>(StringComparer.OrdinalIgnoreCase);
-                if (attachmentInfoList.Any())
-                {
-                    var hashes = attachmentInfoList.Select(x => x.Hash).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                    var existingContents = await _context.EmailAttachmentContents
-                        .Where(c => hashes.Contains(c.ContentHash))
-                        .ToDictionaryAsync(c => c.ContentHash, StringComparer.OrdinalIgnoreCase);
-
-                    foreach (var attachmentInfo in attachmentInfoList)
-                    {
-                        if (!attachmentContentCache.TryGetValue(attachmentInfo.Hash, out var attachmentContent))
-                        {
-                            if (!existingContents.TryGetValue(attachmentInfo.Hash, out attachmentContent))
-                            {
-                                attachmentContent = new EmailAttachmentContent
-                                {
-                                    ContentHash = attachmentInfo.Hash,
-                                    Content = attachmentInfo.Content,
-                                    Size = attachmentInfo.Size
-                                };
-                                _context.EmailAttachmentContents.Add(attachmentContent);
-                            }
-                            attachmentContentCache[attachmentInfo.Hash] = attachmentContent;
-                        }
-
-                        var emailAttachment = new EmailAttachment
-                        {
-                            FileName = attachmentInfo.FileName,
-                            ContentType = attachmentInfo.ContentType,
-                            ContentId = attachmentInfo.ContentId,
-                            AttachmentContent = attachmentContent,
-                            Size = attachmentInfo.Size
-                        };
-
-                        emailAttachments.Add(emailAttachment);
-                        archivedEmail.Attachments.Add(emailAttachment);
-                    }
-                }
-
-                await using var transaction = await _context.Database.BeginTransactionAsync();
                 try
                 {
-                    if (attachmentContentCache.Values.Any(c => c.Id == 0))
-                    {
-                        try
-                        {
-                            await _context.SaveChangesAsync();
-                        }
-                        catch (Exception ex)
-                        {
-                            var current = ex;
-                            var isUniqueViolation = false;
-                            while (current != null)
-                            {
-                                if (current is PostgresException postgresEx && postgresEx.SqlState == "23505")
-                                {
-                                    isUniqueViolation = true;
-                                    break;
-                                }
-                                current = current.InnerException;
-                            }
-
-                            if (!isUniqueViolation)
-                            {
-                                throw;
-                            }
-
-                            _logger.LogDebug("Concurrent insert detected while saving EmailAttachmentContent values, reloading existing hashes");
-
-                            await transaction.RollbackAsync();
-                            await transaction.DisposeAsync();
-                            transaction = await _context.Database.BeginTransactionAsync();
-
-                            foreach (var hash in attachmentContentCache.Keys.ToList())
-                            {
-                                var content = attachmentContentCache[hash];
-                                if (content.Id != 0)
-                                    continue;
-
-                                var existingContent = await _context.EmailAttachmentContents
-                                    .AsNoTracking()
-                                    .FirstOrDefaultAsync(c => c.ContentHash == hash);
-
-                                if (existingContent == null)
-                                    continue;
-
-                                foreach (var attachment in archivedEmail.Attachments.Where(a => a.AttachmentContent?.ContentHash == hash))
-                                {
-                                    attachment.AttachmentContent = existingContent;
-                                    attachment.EmailAttachmentContentId = existingContent.Id;
-                                }
-
-                                var localEntries = _context.ChangeTracker.Entries<EmailAttachmentContent>()
-                                    .Where(e => e.Entity.ContentHash == hash && e.State == EntityState.Added)
-                                    .ToList();
-                                foreach (var localEntry in localEntries)
-                                    localEntry.State = EntityState.Detached;
-
-                                attachmentContentCache[hash] = existingContent;
-                            }
-
-                            await _context.SaveChangesAsync();
-                        }
-                    }
-
                     _context.ArchivedEmails.Add(archivedEmail);
                     await _context.SaveChangesAsync();
-
-                    await transaction.CommitAsync();
 
                     // Attachments are already saved via EF relationship (cascade)
                     _logger.LogInformation("Successfully saved email with {Count} attachments", emailAttachments.Count);
 
                     _logger.LogInformation(
-                        "Archived email: {Subject}, From: {From}, To: {To}, Account: {AccountName}, Attachments: {AttachmentCount}",
-                        archivedEmail.Subject, archivedEmail.From, archivedEmail.To, account.Name, allAttachments.Count);
+                        "Archived email: {Subject}, From: {From}, To: {To}, Account: {AccountName}, Attachments: {AttachmentCount}, OriginalPreserved: {OriginalPreserved}",
+                        archivedEmail.Subject, archivedEmail.From, archivedEmail.To, account.Name, allAttachments.Count,
+                        archivedEmail.BodyUntruncatedText != null || archivedEmail.BodyUntruncatedHtml != null ? "Yes" : "No");
 
                     return true; // Neue E-Mail erfolgreich archiviert
                 }
                 catch (Exception ex)
                 {
-                    await transaction.RollbackAsync();
                     _logger.LogError(ex, "Error saving archived email to database: {Subject}, {Message}", subject, ex.Message);
                     return false;
                 }
