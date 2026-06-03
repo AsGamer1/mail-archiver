@@ -128,7 +128,7 @@ namespace MailArchiver.Data
 
             modelBuilder.Entity<EmailAttachmentContent>()
                 .Property(c => c.ContentHash)
-                .HasColumnType("varchar(32)")
+                .HasColumnType("varchar(64)")
                 .IsRequired();
 
             modelBuilder.Entity<EmailAttachmentContent>()

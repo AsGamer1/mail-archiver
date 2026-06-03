@@ -21,7 +21,7 @@ namespace MailArchiver.Migrations
                     ) THEN
                         CREATE TABLE mail_archiver.""EmailAttachmentContents"" (
                             ""Id"" serial PRIMARY KEY,
-                            ""ContentHash"" varchar(32) NOT NULL,
+                            ""ContentHash"" varchar(64) NOT NULL,
                             ""Content"" bytea NOT NULL,
                             ""Size"" bigint NOT NULL
                         );
@@ -63,8 +63,21 @@ namespace MailArchiver.Migrations
             migrationBuilder.Sql(@"
                 DO $$
                 BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM pg_extension
+                        WHERE extname = 'pgcrypto'
+                    ) THEN
+                        CREATE EXTENSION IF NOT EXISTS pgcrypto;
+                    END IF;
+                END $$;
+            ");
+
+            migrationBuilder.Sql(@"
+                DO $$
+                BEGIN
                     INSERT INTO mail_archiver.""EmailAttachmentContents"" (""ContentHash"", ""Content"", ""Size"")
-                    SELECT md5(""Content""), ""Content"", octet_length(""Content"")
+                    SELECT encode(digest(""Content"", 'sha256'), 'hex'), ""Content"", octet_length(""Content"")
                     FROM (
                         SELECT DISTINCT ""Content""
                         FROM mail_archiver.""EmailAttachments""
@@ -79,7 +92,7 @@ namespace MailArchiver.Migrations
                     UPDATE mail_archiver.""EmailAttachments"" AS a
                     SET ""EmailAttachmentContentId"" = c.""Id""
                     FROM mail_archiver.""EmailAttachmentContents"" AS c
-                    WHERE a.""Content"" = c.""Content"";
+                    WHERE encode(digest(a.""Content"", 'sha256'), 'hex') = c.""ContentHash"";
                 END $$;
             ");
 

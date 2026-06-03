@@ -134,6 +134,8 @@ namespace MailArchiver.Services.Shared
                     Attachments = new List<EmailAttachment>()
                 };
 
+                var attachmentContentCache = new Dictionary<string, EmailAttachmentContent>(StringComparer.OrdinalIgnoreCase);
+
                 if (allAttachments.Any())
                 {
                     foreach (var attachment in allAttachments)
@@ -145,68 +147,25 @@ namespace MailArchiver.Services.Shared
                             var fileName = GetAttachmentFileName(attachment);
                             var contentBytes = ms.ToArray();
                             var contentHash = EmailAttachmentContent.CalculateContentHash(contentBytes);
-                            var existingContent = await context.EmailAttachmentContents
-                                .FirstOrDefaultAsync(c => c.ContentHash == contentHash);
 
-                            if (existingContent == null)
+                            if (!attachmentContentCache.TryGetValue(contentHash, out var existingContent))
                             {
-                                existingContent = new EmailAttachmentContent
-                                {
-                                    ContentHash = contentHash,
-                                    Content = contentBytes,
-                                    Size = ms.Length
-                                };
+                                existingContent = await context.EmailAttachmentContents
+                                    .FirstOrDefaultAsync(c => c.ContentHash == contentHash);
 
-                                context.EmailAttachmentContents.Add(existingContent);
-                                try
+                                if (existingContent == null)
                                 {
-                                    // Persist the content immediately to obtain the Id and avoid
-                                    // a unique-constraint race when multiple importer tasks run concurrently.
-                                    await context.SaveChangesAsync();
+                                    existingContent = new EmailAttachmentContent
+                                    {
+                                        ContentHash = contentHash,
+                                        Content = contentBytes,
+                                        Size = ms.Length
+                                    };
+
+                                    context.EmailAttachmentContents.Add(existingContent);
                                 }
-                                catch (Exception ex)
-                                {
-                                    // Check for PostgresException (unique violation) anywhere in the exception chain
-                                    var pgEx = ex;
-                                    bool isUniqueViolation = false;
-                                    
-                                    while (pgEx != null)
-                                    {
-                                        if (pgEx is PostgresException postgresEx && postgresEx.SqlState == "23505")
-                                        {
-                                            isUniqueViolation = true;
-                                            break;
-                                        }
-                                        pgEx = pgEx.InnerException;
-                                    }
-                                    
-                                    if (isUniqueViolation)
-                                    {
-                                        _logger.LogDebug("Concurrent insert for EmailAttachmentContent hash {Hash}, reloading", contentHash);
-                                        // Detach the entity that failed to insert
-                                        context.Entry(existingContent).State = EntityState.Detached;
-                                        
-                                        // Reload the existing content from the database
-                                        existingContent = await context.EmailAttachmentContents
-                                            .AsNoTracking()
-                                            .FirstOrDefaultAsync(c => c.ContentHash == contentHash);
-                                        
-                                        if (existingContent == null)
-                                        {
-                                            // If it still doesn't exist, something is wrong
-                                            _logger.LogError("EmailAttachmentContent with hash {Hash} not found after unique violation", contentHash);
-                                            throw;
-                                        }
-                                        
-                                        // Re-attach in a trackable state if needed for the rest of the operation
-                                        existingContent = context.EmailAttachmentContents.Attach(existingContent).Entity;
-                                    }
-                                    else
-                                    {
-                                        // Not a unique violation, rethrow
-                                        throw;
-                                    }
-                                }
+
+                                attachmentContentCache[contentHash] = existingContent;
                             }
 
                             archivedEmail.Attachments.Add(new EmailAttachment
@@ -217,8 +176,67 @@ namespace MailArchiver.Services.Shared
                                 AttachmentContent = existingContent,
                                 Size = ms.Length
                             });
-                                                    }
-                        catch (Exception ex) { _logger.LogWarning(ex, "Job {JobId}: Failed to process attachment", jobId); }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Job {JobId}: Failed to process attachment", jobId);
+                        }
+                    }
+                }
+
+                if (attachmentContentCache.Values.Any(c => c.Id == 0))
+                {
+                    try
+                    {
+                        await context.SaveChangesAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        var current = ex;
+                        var isUniqueViolation = false;
+                        while (current != null)
+                        {
+                            if (current is PostgresException postgresEx && postgresEx.SqlState == "23505")
+                            {
+                                isUniqueViolation = true;
+                                break;
+                            }
+                            current = current.InnerException;
+                        }
+
+                        if (!isUniqueViolation)
+                            throw;
+
+                        _logger.LogDebug("Concurrent insert detected while saving EmailAttachmentContent values, reloading existing hashes");
+
+                        foreach (var hash in attachmentContentCache.Keys.ToList())
+                        {
+                            var content = attachmentContentCache[hash];
+                            if (content.Id != 0)
+                                continue;
+
+                            var existingContent = await context.EmailAttachmentContents
+                                .AsNoTracking()
+                                .FirstOrDefaultAsync(c => c.ContentHash == hash);
+
+                            if (existingContent == null)
+                                continue;
+
+                            foreach (var attachment in archivedEmail.Attachments.Where(a => a.AttachmentContent?.ContentHash == hash))
+                            {
+                                attachment.AttachmentContent = existingContent;
+                                attachment.EmailAttachmentContentId = existingContent.Id;
+                            }
+
+                            var localEntry = context.ChangeTracker.Entries<EmailAttachmentContent>()
+                                .FirstOrDefault(e => e.Entity.ContentHash == hash && e.State == EntityState.Added);
+                            if (localEntry != null)
+                                localEntry.State = EntityState.Detached;
+
+                            attachmentContentCache[hash] = existingContent;
+                        }
+
+                        await context.SaveChangesAsync();
                     }
                 }
 
