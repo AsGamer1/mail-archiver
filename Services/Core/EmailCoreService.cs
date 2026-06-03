@@ -1306,68 +1306,71 @@ namespace MailArchiver.Services.Core
                     }
                 }
 
-                if (attachmentContentCache.Values.Any(c => c.Id == 0))
-                {
-                    try
-                    {
-                        await _context.SaveChangesAsync();
-                    }
-                    catch (Exception ex)
-                    {
-                        var current = ex;
-                        var isUniqueViolation = false;
-                        while (current != null)
-                        {
-                            if (current is PostgresException postgresEx && postgresEx.SqlState == "23505")
-                            {
-                                isUniqueViolation = true;
-                                break;
-                            }
-                            current = current.InnerException;
-                        }
-
-                        if (!isUniqueViolation)
-                        {
-                            throw;
-                        }
-
-                        _logger.LogDebug("Concurrent insert detected while saving EmailAttachmentContent values, reloading existing hashes");
-
-                        foreach (var hash in attachmentContentCache.Keys.ToList())
-                        {
-                            var content = attachmentContentCache[hash];
-                            if (content.Id != 0)
-                                continue;
-
-                            var existingContent = await _context.EmailAttachmentContents
-                                .AsNoTracking()
-                                .FirstOrDefaultAsync(c => c.ContentHash == hash);
-
-                            if (existingContent == null)
-                                continue;
-
-                            foreach (var attachment in archivedEmail.Attachments.Where(a => a.AttachmentContent?.ContentHash == hash))
-                            {
-                                attachment.AttachmentContent = existingContent;
-                                attachment.EmailAttachmentContentId = existingContent.Id;
-                            }
-
-                            var localEntry = _context.ChangeTracker.Entries<EmailAttachmentContent>()
-                                .FirstOrDefault(e => e.Entity.ContentHash == hash && e.State == EntityState.Added);
-                            if (localEntry != null)
-                                localEntry.State = EntityState.Detached;
-
-                            attachmentContentCache[hash] = existingContent;
-                        }
-
-                        await _context.SaveChangesAsync();
-                    }
-                }
-
+                await using var transaction = await _context.Database.BeginTransactionAsync();
                 try
                 {
+                    if (attachmentContentCache.Values.Any(c => c.Id == 0))
+                    {
+                        try
+                        {
+                            await _context.SaveChangesAsync();
+                        }
+                        catch (Exception ex)
+                        {
+                            var current = ex;
+                            var isUniqueViolation = false;
+                            while (current != null)
+                            {
+                                if (current is PostgresException postgresEx && postgresEx.SqlState == "23505")
+                                {
+                                    isUniqueViolation = true;
+                                    break;
+                                }
+                                current = current.InnerException;
+                            }
+
+                            if (!isUniqueViolation)
+                            {
+                                throw;
+                            }
+
+                            _logger.LogDebug("Concurrent insert detected while saving EmailAttachmentContent values, reloading existing hashes");
+
+                            foreach (var hash in attachmentContentCache.Keys.ToList())
+                            {
+                                var content = attachmentContentCache[hash];
+                                if (content.Id != 0)
+                                    continue;
+
+                                var existingContent = await _context.EmailAttachmentContents
+                                    .AsNoTracking()
+                                    .FirstOrDefaultAsync(c => c.ContentHash == hash);
+
+                                if (existingContent == null)
+                                    continue;
+
+                                foreach (var attachment in archivedEmail.Attachments.Where(a => a.AttachmentContent?.ContentHash == hash))
+                                {
+                                    attachment.AttachmentContent = existingContent;
+                                    attachment.EmailAttachmentContentId = existingContent.Id;
+                                }
+
+                                var localEntry = _context.ChangeTracker.Entries<EmailAttachmentContent>()
+                                    .FirstOrDefault(e => e.Entity.ContentHash == hash && e.State == EntityState.Added);
+                                if (localEntry != null)
+                                    localEntry.State = EntityState.Detached;
+
+                                attachmentContentCache[hash] = existingContent;
+                            }
+
+                            await _context.SaveChangesAsync();
+                        }
+                    }
+
                     _context.ArchivedEmails.Add(archivedEmail);
                     await _context.SaveChangesAsync();
+
+                    await transaction.CommitAsync();
 
                     // Attachments are already saved via EF relationship (cascade)
                     _logger.LogInformation("Successfully saved email with {Count} attachments", emailAttachments.Count);
@@ -1380,6 +1383,7 @@ namespace MailArchiver.Services.Core
                 }
                 catch (Exception ex)
                 {
+                    await transaction.RollbackAsync();
                     _logger.LogError(ex, "Error saving archived email to database: {Subject}, {Message}", subject, ex.Message);
                     return false;
                 }

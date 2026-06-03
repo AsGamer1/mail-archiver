@@ -285,7 +285,7 @@ namespace MailArchiver.Migrations
 
                     b.Property<string>("ContentHash")
                         .IsRequired()
-                        .HasColumnType("character varying(32)");
+                        .HasColumnType("character varying(64)");
 
                     b.HasKey("Id");
 
